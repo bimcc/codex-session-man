@@ -28,6 +28,8 @@
 - 按当前筛选结果批量修改 provider
 - 高风险操作（批量 provider、归档、恢复）采用 VS Code 模态确认
 
+- Session execution health check (healthy/running/stuck)
+- One-click repair for stuck sessions (check-before-repair with auto backup)
 ## 命令
 
 - `Codex Session Manager: Open`
@@ -73,3 +75,4 @@ npm run build:vsix
 ## 内置依赖说明
 
 当前版本使用 VS Code 运行时自带的 `node:sqlite`，不依赖外部 `nodePath` 或系统 SQLite CLI。
+

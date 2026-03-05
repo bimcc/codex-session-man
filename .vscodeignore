@@ -5,3 +5,5 @@ dist/**
 *.vsix
 build-vsix.ps1
 scripts/**
+.github/**
+.gitignore

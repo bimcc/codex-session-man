@@ -16,6 +16,7 @@
     listTotal: 0,
     providerEditing: false,
     configInfo: null,
+    sessionHealth: null,
   };
 
   const els = {
@@ -34,13 +35,17 @@
     detailTitle: document.getElementById("detailTitle"),
     detailMeta: document.getElementById("detailMeta"),
     providerInline: document.getElementById("providerInline"),
+    execInline: document.getElementById("execInline"),
     providerValue: document.getElementById("providerValue"),
     providerEditInput: document.getElementById("providerEditInput"),
     editProviderBtn: document.getElementById("editProviderBtn"),
     saveProviderBtn: document.getElementById("saveProviderBtn"),
     cancelProviderBtn: document.getElementById("cancelProviderBtn"),
     providerState: document.getElementById("providerState"),
+    execStateText: document.getElementById("execStateText"),
     repairProviderBtn: document.getElementById("repairProviderBtn"),
+    checkExecBtn: document.getElementById("checkExecBtn"),
+    repairExecBtn: document.getElementById("repairExecBtn"),
     copyResumeBtn: document.getElementById("copyResumeBtn"),
     copySessionIdBtn: document.getElementById("copySessionIdBtn"),
     runResumeBtn: document.getElementById("runResumeBtn"),
@@ -315,6 +320,70 @@
     setProviderEditing(false);
   }
 
+  function getSessionHealthView(health) {
+    if (!health) {
+      return {
+        text: "未检测",
+        kind: "warning",
+        canRepair: false,
+      };
+    }
+
+    const openCount = Number(health.openTaskCount || 0);
+    const idle = Number.isFinite(Number(health.idleSeconds)) ? `${health.idleSeconds}s` : "-";
+
+    if (health.status === "healthy") {
+      return {
+        text: "正常：未发现未闭合任务",
+        kind: "ok",
+        canRepair: false,
+      };
+    }
+
+    if (health.status === "running") {
+      return {
+        text: `运行中：未闭合任务 ${openCount} · 最近活动 ${idle} 前`,
+        kind: "warning",
+        canRepair: false,
+      };
+    }
+
+    if (health.status === "stuck") {
+      return {
+        text: `疑似卡住：未闭合任务 ${openCount} · 空闲 ${idle}`,
+        kind: "error",
+        canRepair: !!health.canRepair,
+      };
+    }
+
+    return {
+      text: `检测异常：${health.reason || "unknown"}`,
+      kind: "error",
+      canRepair: false,
+    };
+  }
+
+  function renderSessionHealth() {
+    const session = state.detail?.session;
+    if (!session || !session.id) {
+      els.execInline.classList.add("hidden");
+      return;
+    }
+
+    els.execInline.classList.remove("hidden");
+    const info = getSessionHealthView(state.sessionHealth);
+    els.execStateText.textContent = info.text;
+    els.execStateText.classList.remove("is-ok", "is-warning", "is-error");
+    if (info.kind === "ok") {
+      els.execStateText.classList.add("is-ok");
+    } else if (info.kind === "warning") {
+      els.execStateText.classList.add("is-warning");
+    } else {
+      els.execStateText.classList.add("is-error");
+    }
+
+    els.repairExecBtn.classList.toggle("hidden", !info.canRepair);
+  }
   function renderDetail() {
     const detail = state.detail;
     if (!detail || !detail.session || detail.session.id !== state.selectedId) {
@@ -323,6 +392,7 @@
       els.detailTitle.textContent = "";
       els.detailMeta.innerHTML = "";
       els.providerInline.classList.add("hidden");
+      els.execInline.classList.add("hidden");
       els.messageStats.textContent = "";
       els.messageList.innerHTML = "";
       return;
@@ -335,6 +405,7 @@
     els.detailTitle.textContent = session.title || session.firstUserMessage || session.id;
     els.detailMeta.innerHTML = renderMeta(session);
     renderProviderInline(session);
+    renderSessionHealth();
 
     els.deleteRestoreBtn.textContent = session.archived ? "\u6062\u590d\u4f1a\u8bdd" : "\u5f52\u6863\u4f1a\u8bdd";
     els.deleteRestoreBtn.classList.toggle("danger", !session.archived);
@@ -478,11 +549,13 @@
     }
 
     if (state.items.length > 0) {
+      state.sessionHealth = null;
       setSelected(state.items[0].id);
       await loadDetail(state.items[0].id, { silent: true });
     } else {
       state.selectedId = null;
       state.detail = null;
+      state.sessionHealth = null;
       renderList();
       renderDetail();
     }
@@ -535,6 +608,7 @@
 
     setSelected(id);
     state.detail = null;
+    state.sessionHealth = null;
     renderDetail();
 
     try {
@@ -706,6 +780,92 @@
   }
 
 
+  async function onCheckSessionHealth() {
+    const id = state.detail?.session?.id;
+    if (!id) {
+      setStatus("请先选择会话", "error");
+      return;
+    }
+
+    els.checkExecBtn.disabled = true;
+    try {
+      setStatus("正在检测会话执行状态...");
+      const data = await rpc("checkSessionHealth", { id, maxIdleSeconds: 600 });
+      if (state.selectedId !== id) {
+        return;
+      }
+
+      state.sessionHealth = data;
+      renderSessionHealth();
+
+      if (data.status === "healthy") {
+        setStatus("检测完成：会话状态正常", "success");
+      } else if (data.status === "running") {
+        setStatus("检测完成：会话仍在运行或刚刚活动", "success");
+      } else if (data.status === "stuck") {
+        setStatus(data.canRepair ? "检测完成：发现疑似卡住，可执行修复" : "检测完成：疑似卡住，但缺少可修复 turn_id", "error");
+      } else {
+        setStatus(`检测完成：${data.reason || "状态异常"}`, "error");
+      }
+    } catch (error) {
+      setStatus(`检测失败: ${error.message}`, "error");
+    } finally {
+      els.checkExecBtn.disabled = false;
+    }
+  }
+
+  async function onRepairSessionHealth() {
+    const id = state.detail?.session?.id;
+    if (!id) {
+      setStatus("请先选择会话", "error");
+      return;
+    }
+
+    let health = state.sessionHealth;
+    if (!health || health.id !== id) {
+      try {
+        health = await rpc("checkSessionHealth", { id, maxIdleSeconds: 600 });
+        state.sessionHealth = health;
+        renderSessionHealth();
+      } catch (error) {
+        setStatus(`修复前检测失败: ${error.message}`, "error");
+        return;
+      }
+    }
+
+    if (!health.canRepair) {
+      setStatus("当前会话未检测到可修复的卡住状态", "error");
+      return;
+    }
+
+    const ok = await confirmDanger(`确认修复该会话的执行状态吗？turn_id=${health.repairTurnId || "-"}`, "确认修复");
+    if (!ok) {
+      return;
+    }
+
+    els.repairExecBtn.disabled = true;
+    try {
+      setStatus("正在修复会话执行状态...");
+      const data = await rpc("repairSessionHealth", { id, maxIdleSeconds: 600, reason: "manual_force_stop" });
+      if (state.selectedId !== id) {
+        return;
+      }
+
+      state.sessionHealth = { id, ...(data.after || {}) };
+      renderSessionHealth();
+      await loadDetail(id, { silent: true });
+
+      if (data.repaired) {
+        setStatus(`修复完成，已备份: ${data.backupPath}`, "success");
+      } else {
+        setStatus("修复执行完成，但状态仍需人工确认", "error");
+      }
+    } catch (error) {
+      setStatus(`修复失败: ${error.message}`, "error");
+    } finally {
+      els.repairExecBtn.disabled = false;
+    }
+  }
   async function onCopyResume() {
     const id = state.detail?.session?.id || state.selectedId;
     if (!id) {
@@ -862,6 +1022,8 @@
       }
     });
     els.repairProviderBtn.addEventListener("click", onRepairProvider);
+    els.checkExecBtn.addEventListener("click", onCheckSessionHealth);
+    els.repairExecBtn.addEventListener("click", onRepairSessionHealth);
 
     els.deleteRestoreBtn.addEventListener("click", onDeleteOrRestore);
     els.copyResumeBtn.addEventListener("click", onCopyResume);
@@ -885,6 +1047,10 @@
 
   bootstrap();
 })();
+
+
+
+
 
 
 

@@ -149,6 +149,10 @@ async function handleOperation(op, payload) {
       return listSessions(dbPath, payload || {});
     case "getSessionDetail":
       return getSessionDetail(dbPath, payload || {});
+    case "checkSessionHealth":
+      return checkSessionHealth(dbPath, payload || {});
+    case "repairSessionHealth":
+      return repairSessionHealth(dbPath, payload || {});
     case "updateProvider":
       return updateProvider(dbPath, payload || {});
     case "batchUpdate":
@@ -844,6 +848,345 @@ async function readSessionMessages(filePath, maxMessages) {
   }
 }
 
+function parseTimestampMs(value) {
+  if (!value) {
+    return 0;
+  }
+  const ms = Date.parse(String(value));
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function extractTurnId(event) {
+  const payload = event?.payload || {};
+  const candidates = [
+    payload.turn_id,
+    payload.turnId,
+    payload?.turn?.id,
+    payload?.context?.turn_id,
+  ];
+
+  for (const candidate of candidates) {
+    const id = String(candidate || "").trim();
+    if (id) {
+      return id;
+    }
+  }
+  return "";
+}
+
+const TASK_CLOSE_EVENTS = new Set([
+  "task_complete",
+  "task_aborted",
+  "turn_aborted",
+  "turn_complete",
+  "turn_completed",
+  "task_failed",
+]);
+
+async function analyzeSessionExecutionHealth(filePath, options = {}) {
+  if (!filePath || !fs.existsSync(filePath)) {
+    return {
+      filePath,
+      exists: false,
+      status: "error",
+      reason: "session_file_not_found",
+      canRepair: false,
+      openTaskCount: 0,
+      openKnownTaskCount: 0,
+      openUnknownTaskCount: 0,
+      repairTurnId: "",
+      lastEventType: "",
+      lastEventAt: null,
+      lastWriteAt: null,
+      idleSeconds: null,
+      thresholdSeconds: Math.max(30, Number(options.maxIdleSeconds || 600)),
+      parsedLines: 0,
+      parseErrors: 0,
+    };
+  }
+
+  const thresholdSeconds = Math.max(30, Number(options.maxIdleSeconds || 600));
+  const openTasks = new Map();
+
+  let openUnknownTaskCount = 0;
+  let parseErrors = 0;
+  let parsedLines = 0;
+  let lastEventType = "";
+  let lastEventAtMs = 0;
+
+  const stream = fs.createReadStream(filePath, { encoding: "utf8" });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
+  try {
+    for await (const line of rl) {
+      parsedLines += 1;
+      const raw = line.trim();
+      if (!raw) {
+        continue;
+      }
+
+      let obj;
+      try {
+        obj = JSON.parse(raw);
+      } catch {
+        parseErrors += 1;
+        continue;
+      }
+
+      const timestampMs = parseTimestampMs(obj.timestamp);
+      if (timestampMs > lastEventAtMs) {
+        lastEventAtMs = timestampMs;
+      }
+
+      if (obj?.type !== "event_msg" || !obj?.payload?.type) {
+        continue;
+      }
+
+      const eventType = String(obj.payload.type || "").trim();
+      if (!eventType) {
+        continue;
+      }
+
+      lastEventType = eventType;
+      const turnId = extractTurnId(obj);
+
+      if (eventType === "task_started") {
+        if (!turnId) {
+          openUnknownTaskCount += 1;
+          continue;
+        }
+
+        let entry = openTasks.get(turnId);
+        if (!entry) {
+          entry = {
+            turnId,
+            openCount: 0,
+            firstStartedAtMs: 0,
+            lastStartedAtMs: 0,
+          };
+          openTasks.set(turnId, entry);
+        }
+
+        entry.openCount += 1;
+        if (!entry.firstStartedAtMs && timestampMs > 0) {
+          entry.firstStartedAtMs = timestampMs;
+        }
+        if (timestampMs > entry.lastStartedAtMs) {
+          entry.lastStartedAtMs = timestampMs;
+        }
+        continue;
+      }
+
+      if (TASK_CLOSE_EVENTS.has(eventType)) {
+        if (!turnId) {
+          if (openUnknownTaskCount > 0) {
+            openUnknownTaskCount -= 1;
+          }
+          continue;
+        }
+
+        const entry = openTasks.get(turnId);
+        if (!entry || entry.openCount <= 0) {
+          continue;
+        }
+
+        entry.openCount -= 1;
+      }
+    }
+  } finally {
+    rl.close();
+    stream.destroy();
+  }
+
+  const stat = fs.statSync(filePath);
+  const lastWriteMs = Number(stat.mtimeMs || 0);
+  const activityMs = Math.max(lastEventAtMs, lastWriteMs);
+  const idleSeconds = activityMs > 0 ? Math.max(0, Math.floor((Date.now() - activityMs) / 1000)) : null;
+
+  const openEntries = [...openTasks.values()]
+    .filter((item) => item.openCount > 0)
+    .sort((a, b) => (a.lastStartedAtMs || 0) - (b.lastStartedAtMs || 0));
+
+  const openKnownTaskCount = openEntries.reduce((sum, item) => sum + Number(item.openCount || 0), 0);
+  const openTaskCount = openKnownTaskCount + openUnknownTaskCount;
+  const repairTurnId = openEntries.length ? String(openEntries[openEntries.length - 1].turnId || "") : "";
+
+  let status = "healthy";
+  let reason = "closed";
+  if (openTaskCount > 0) {
+    if (idleSeconds !== null && idleSeconds >= thresholdSeconds) {
+      status = "stuck";
+      reason = "open_without_terminal_event_and_idle_timeout";
+    } else {
+      status = "running";
+      reason = "open_task_started_with_recent_activity";
+    }
+  }
+
+  const canRepair = status === "stuck" && !!repairTurnId;
+
+  return {
+    filePath,
+    exists: true,
+    status,
+    reason,
+    canRepair,
+    openTaskCount,
+    openKnownTaskCount,
+    openUnknownTaskCount,
+    repairTurnId,
+    lastEventType,
+    lastEventAt: lastEventAtMs ? new Date(lastEventAtMs).toISOString() : null,
+    lastWriteAt: lastWriteMs ? new Date(lastWriteMs).toISOString() : null,
+    idleSeconds,
+    thresholdSeconds,
+    parsedLines,
+    parseErrors,
+  };
+}
+
+function buildBackupPath(filePath) {
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
+  return `${filePath}.bak-${stamp}`;
+}
+
+function fileEndsWithNewline(filePath) {
+  const stat = fs.statSync(filePath);
+  if (!stat.size) {
+    return true;
+  }
+
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const buf = Buffer.allocUnsafe(1);
+    fs.readSync(fd, buf, 0, 1, Math.max(0, stat.size - 1));
+    return buf[0] === 0x0a;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+async function appendAbortEvents(filePath, turnId, reason) {
+  const timestamp = new Date().toISOString();
+  const events = [
+    {
+      timestamp,
+      type: "event_msg",
+      payload: {
+        type: "task_aborted",
+        turn_id: turnId,
+        reason,
+        source: "session_manager_fix",
+      },
+    },
+    {
+      timestamp,
+      type: "event_msg",
+      payload: {
+        type: "turn_aborted",
+        turn_id: turnId,
+        reason,
+        source: "session_manager_fix",
+      },
+    },
+  ];
+
+  const prefix = fileEndsWithNewline(filePath) ? "" : "\n";
+  const body = events.map((item) => JSON.stringify(item)).join("\n") + "\n";
+  await fsp.appendFile(filePath, prefix + body, "utf8");
+  return events.length;
+}
+
+async function checkSessionHealth(dbPath, payload) {
+  const id = String(payload.id || "").trim();
+  if (!id) {
+    throw new Error("id is required");
+  }
+
+  const maxIdleSeconds = Math.max(30, Number(payload.maxIdleSeconds || 600));
+  const db = openDb(dbPath);
+
+  try {
+    const row = dbGet(
+      db,
+      `SELECT id, rollout_path
+       FROM threads
+       WHERE id = ?`,
+      [id],
+    );
+
+    if (!row) {
+      throw new Error("Session not found");
+    }
+
+    const health = await analyzeSessionExecutionHealth(row.rollout_path, { maxIdleSeconds });
+    return {
+      id,
+      maxIdleSeconds,
+      ...health,
+    };
+  } finally {
+    closeDb(db);
+  }
+}
+
+async function repairSessionHealth(dbPath, payload) {
+  const id = String(payload.id || "").trim();
+  if (!id) {
+    throw new Error("id is required");
+  }
+
+  const reason = String(payload.reason || "manual_force_stop").trim() || "manual_force_stop";
+  const maxIdleSeconds = Math.max(30, Number(payload.maxIdleSeconds || 600));
+  const db = openDb(dbPath);
+
+  try {
+    const row = dbGet(
+      db,
+      `SELECT id, rollout_path
+       FROM threads
+       WHERE id = ?`,
+      [id],
+    );
+
+    if (!row) {
+      throw new Error("Session not found");
+    }
+
+    const before = await analyzeSessionExecutionHealth(row.rollout_path, { maxIdleSeconds });
+    if (!before.canRepair || !before.repairTurnId) {
+      throw new Error(`Session is not repairable (status=${before.status}, reason=${before.reason})`);
+    }
+
+    const backupPath = buildBackupPath(row.rollout_path);
+    await fsp.copyFile(row.rollout_path, backupPath);
+
+    const appended = await appendAbortEvents(row.rollout_path, before.repairTurnId, reason);
+
+    dbRun(
+      db,
+      `UPDATE threads
+       SET updated_at = ?
+       WHERE id = ?`,
+      [nowSec(), id],
+    );
+
+    const after = await analyzeSessionExecutionHealth(row.rollout_path, { maxIdleSeconds });
+
+    return {
+      id,
+      repaired: before.canRepair && after.status !== "stuck",
+      reason,
+      turnId: before.repairTurnId,
+      backupPath,
+      appended,
+      before,
+      after,
+    };
+  } finally {
+    closeDb(db);
+  }
+}
 async function getSessionDetail(dbPath, payload) {
   const id = String(payload.id || "").trim();
   if (!id) {
@@ -1327,6 +1670,12 @@ function getWebviewHtml(webview, extensionUri) {
                   <button id="cancelProviderBtn" class="btn mini hidden">取消</button>
                   <button id="repairProviderBtn" class="btn mini warn hidden">修正不一致</button>
                 </div>
+                <div id="execInline" class="provider-inline exec-inline hidden">
+                  <span class="provider-label">执行状态</span>
+                  <span id="execStateText" class="provider-state">未检测</span>
+                  <button id="checkExecBtn" class="btn mini">检测状态</button>
+                  <button id="repairExecBtn" class="btn mini warn hidden">修复会话</button>
+                </div>
               </div>
 
               <div class="detail-actions">
@@ -1361,6 +1710,10 @@ module.exports = {
   activate,
   deactivate,
 };
+
+
+
+
 
 
 
