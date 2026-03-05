@@ -1136,7 +1136,10 @@ async function repairSessionHealth(dbPath, payload) {
     throw new Error("id is required");
   }
 
-  const reason = String(payload.reason || "manual_force_stop").trim() || "manual_force_stop";
+  let reason = String(payload.reason || "interrupted").trim() || "interrupted";
+  if (reason === "manual_force_stop") {
+    reason = "interrupted";
+  }
   const maxIdleSeconds = Math.max(30, Number(payload.maxIdleSeconds || 600));
   const db = openDb(dbPath);
 

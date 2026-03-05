@@ -2,7 +2,7 @@
   "name": "codex-session-manager-vscode",
   "displayName": "Codex Session Manager",
   "description": "Manage Codex sessions in VS Code: list, search, archive tab, and resume helpers.",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "publisher": "local",
   "license": "MIT",
   "engines": {

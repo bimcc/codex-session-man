@@ -846,7 +846,7 @@
     els.repairExecBtn.disabled = true;
     try {
       setStatus("正在修复会话执行状态...");
-      const data = await rpc("repairSessionHealth", { id, maxIdleSeconds: 600, reason: "manual_force_stop" });
+      const data = await rpc("repairSessionHealth", { id, maxIdleSeconds: 600, reason: "interrupted" });
       if (state.selectedId !== id) {
         return;
       }
