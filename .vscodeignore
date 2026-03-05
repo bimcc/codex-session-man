@@ -1,0 +1,7 @@
+﻿.vscode/**
+.vscode-test/**
+node_modules/**
+dist/**
+*.vsix
+build-vsix.ps1
+scripts/**

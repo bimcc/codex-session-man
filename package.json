@@ -1,0 +1,70 @@
+{
+  "name": "codex-session-manager-vscode",
+  "displayName": "Codex Session Manager",
+  "description": "Manage Codex sessions in VS Code: list, search, archive tab, and resume helpers.",
+  "version": "0.2.6",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:codexSessionManager.open",
+    "onView:codexSessionManager.main"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codexSessionManager.open",
+        "title": "Codex Session Manager: Open"
+      }
+    ],
+    "configuration": {
+      "title": "Codex Session Manager",
+      "properties": {
+        "codexSessionManager.codexHome": {
+          "type": "string",
+          "default": "",
+          "description": "Custom CODEX_HOME path. Leave empty to use ~/.codex."
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codexSessionManager",
+          "title": "Codex Sessions",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "codexSessionManager": [
+        {
+          "id": "codexSessionManager.main",
+          "name": "Session Manager",
+          "type": "webview"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "codexSessionManager.main",
+        "contents": "Open the session manager view.\\n[Open Manager](command:codexSessionManager.open)"
+      }
+    ]
+  },
+  "scripts": {
+    "check": "node --check \"%npm_config_local_prefix%\\extension.js\" && node --check \"%npm_config_local_prefix%\\media\\webview.js\"",
+    "package": "vsce package",
+    "package:vsix": "node -e \"require('fs').mkdirSync(process.env.npm_config_local_prefix + '\\\\dist', { recursive: true })\" && npx --yes @vscode/vsce@latest package --allow-missing-repository --out \"%npm_config_local_prefix%\\dist\\codex-session-manager-vscode-%npm_package_version%.vsix\"",
+    "build:vsix": "npm run check && npm run package:vsix"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.90.0"
+  }
+}

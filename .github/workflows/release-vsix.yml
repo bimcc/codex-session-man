@@ -1,0 +1,45 @@
+﻿name: Release VSIX
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build VSIX
+        run: npm run build:vsix
+
+      - name: Prepare stable asset name
+        shell: pwsh
+        run: |
+          $vsix = Get-ChildItem dist\*.vsix | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $vsix) {
+            throw "VSIX not found in dist/"
+          }
+          Copy-Item $vsix.FullName dist\codex-session-manager-vscode.vsix -Force
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.vsix
+          generate_release_notes: true
