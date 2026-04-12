@@ -13,7 +13,10 @@
   ],
   "activationEvents": [
     "onCommand:codexSessionManager.open",
-    "onView:codexSessionManager.main"
+    "onView:codexSessionManager.controls",
+    "onView:codexSessionManager.sessions",
+    "onView:codexSessionManager.details",
+    "onView:codexSessionManager.messages"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -21,6 +24,10 @@
       {
         "command": "codexSessionManager.open",
         "title": "Codex Session Manager: Open"
+      },
+      {
+        "command": "codexSessionManager.refresh",
+        "title": "Codex Session Manager: Refresh"
       }
     ],
     "configuration": {
@@ -45,16 +52,30 @@
     "views": {
       "codexSessionManager": [
         {
-          "id": "codexSessionManager.main",
-          "name": "Session Manager",
+          "id": "codexSessionManager.controls",
+          "name": "Controls",
+          "type": "webview"
+        },
+        {
+          "id": "codexSessionManager.sessions",
+          "name": "Sessions"
+        },
+        {
+          "id": "codexSessionManager.details",
+          "name": "Details",
+          "type": "webview"
+        },
+        {
+          "id": "codexSessionManager.messages",
+          "name": "Messages",
           "type": "webview"
         }
       ]
     },
     "viewsWelcome": [
       {
-        "view": "codexSessionManager.main",
-        "contents": "Open the session manager view.\\n[Open Manager](command:codexSessionManager.open)"
+        "view": "codexSessionManager.sessions",
+        "contents": "Open the session manager views.\\n[Refresh Sessions](command:codexSessionManager.refresh)"
       }
     ]
   },
